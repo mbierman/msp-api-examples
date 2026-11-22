@@ -4,53 +4,19 @@ MSP_DOMAIN="<Your Firewalla Domain>"
 API_TOKEN="<My API Token>"
 TARGET_LIST_ID="<Target List ID>"   # TL-00000000-0000-0000-0000-000000000000
 FILE_PATH="<CF Real IP Conf Path>"  # /path/to/cf_real-ip.conf 
+NOTE="$(date '+%H:%M:%S %Z %m-%d-%Y')"
 
-# Read IP addresses from cf_real-ip.conf excluding my Docker subnet
-ip_addresses=$(grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?' $FILE_PATH | \
-  grep -Ev '^172\.18\.')
+# Grab current IPv4 and IPv6 IPs. 
+CF_IPS=$(printf "%s\n%s\n" \
+  "$(curl -fsSL https://www.cloudflare.com/ips-v4)" \
+  "$(curl -fsSL https://www.cloudflare.com/ips-v6)" \
+  | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}|[0-9a-fA-F:]+/[0-9]{1,3}')
 
-# Function to check if IP list has changed
-ip_list_has_changed() {
-  local new_ip_list="$1"
-  local previous_ip_list="$2"
+[[ -n "$CF_IPS" ]] || exit 1
 
-  if [ "$new_ip_list" != "$previous_ip_list" ]; then
-    return 0 # IP list has changed
-  else
-    return 1 # IP list has not changed
-  fi
-}
+JSON_ARRAY=$(printf '"%s",' $CF_IPS | sed 's/,$//')
 
-# Create or read the previously stored IP list
-if [ -f previous_ip_list.txt ]; then
-  previous_ip_list=$(cat previous_ip_list.txt)
-else
-  touch previous_ip_list.txt
-  previous_ip_list=""
-fi
-
-# Check if IP list has changed
-if ip_list_has_changed "$ip_addresses" "$previous_ip_list"; then
-  echo "$ip_addresses" > previous_ip_list.txt
-
-  targets=$(echo -n $ip_addresses | jq -cRs 'split(" ")[:2000]') # max 2000 targets
-  # Construct the JSON payload
-  json_payload="{
-    \"targets\": $targets
-  }"
-
-  # Make the API call
-  http_code=$(curl -s -w %{http_code} -o /dev/null --request PATCH \
-  --url "https://$MSP_DOMAIN/v2/target-lists/$TARGET_LIST_ID" \
-  --header "Authorization: Token $API_TOKEN" \
-  --header "Content-Type: application/json" \
-  --data "$json_payload")
-
-  if [[ "$http_code" == '200' ]]; then
-    echo "Update target list successfully"
-  else
-    echo "Update target list failed"
-  fi
-else
-  echo "IP list has not changed. No API call needed."
-fi
+curl -fsS -X PATCH "https://${MSP_DOMAIN}/v2/target-lists/${TARGET_LIST_ID}" \
+  -H "Authorization: Token ${TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d "{\"notes\":\"${NOTE}\",\"targets\":[${JSON_ARRAY}]}" 
